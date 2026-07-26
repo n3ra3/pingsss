@@ -32,12 +32,18 @@ OWNER_CHAT_ID = os.environ.get("OWNER_CHAT_ID", "").strip()
 CURRENCY = int(os.environ.get("CURRENCY", "1"))          # 1 = USD
 COUNTRY = os.environ.get("COUNTRY", "US")
 DEFAULT_MARGIN_PCT = float(os.environ.get("DEFAULT_MARGIN_PCT", "10"))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "90"))     # seconds per full cycle
-REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "4"))    # seconds between items
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))    # seconds per full cycle
+REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "8"))    # seconds between items
+STEAM_COOLDOWN = int(os.environ.get("STEAM_COOLDOWN", "600"))  # pause after a 429, seconds
+STEAM_COOKIE = os.environ.get("STEAM_COOKIE", "").strip()      # optional steamLoginSecure=...
 PORT = int(os.environ.get("PORT", "10000"))
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 _session = requests.Session()
+if STEAM_COOKIE:
+    _session.headers.update({"Cookie": STEAM_COOKIE})
+
+_cooldown_until = 0  # epoch seconds; while now < this, skip all Steam requests
 
 app = Flask(__name__)
 
@@ -167,9 +173,12 @@ def handle_check(chat_id):
         data = steam.fetch_lowest_price(
             it["appid"], it["market_hash_name"], currency=CURRENCY, session=_session)
         name = html.escape(it["name"])
-        if not data:
-            lines.append(f"• {name}\n   ⚠️ нет данных (рейт-лимит Steam или нет лотов)")
-            print(f"[check] {it['name']}: нет данных", flush=True)
+        if data.get("error"):
+            reason = data["error"]
+            note = ("⚠️ Steam лимитирует запросы (429) — подожди пару минут"
+                    if reason == "429" else f"⚠️ нет данных ({reason})")
+            lines.append(f"• {name}\n   {note}")
+            print(f"[check] {it['name']}: {reason}", flush=True)
         else:
             low = data["lowest_cents"]
             in_range = low <= ceil
@@ -268,10 +277,10 @@ def check_item(it):
     data = steam.fetch_lowest_price(
         it["appid"], it["market_hash_name"],
         currency=CURRENCY, session=_session)
-    if not data:
-        print(f"[steam] {it['name']}: нет данных (рейт-лимит/нет лотов) — пропуск",
-              flush=True)
-        return  # rate limited / no listings — skip this cycle, don't reset state
+    if data.get("error"):
+        reason = data["error"]
+        print(f"[steam] {it['name']}: {reason} — пропуск", flush=True)
+        return "rate_limited" if reason == "429" else None
 
     low = data["lowest_cents"]
     last = it["last_alert_cents"]
@@ -306,8 +315,16 @@ def check_item(it):
 
 
 def poller_loop():
+    global _cooldown_until
     print("[steam] poller started", flush=True)
     while True:
+        wait = _cooldown_until - time.time()
+        if wait > 0:
+            print(f"[steam] пауза после лимита Steam (429): ещё {int(wait)}s",
+                  flush=True)
+            time.sleep(min(wait, POLL_INTERVAL))
+            continue
+
         items = storage.all_items()
         if not items:
             print("[steam] watchlist пуст — отправь боту ссылку + цену, чтобы добавить",
@@ -316,7 +333,11 @@ def poller_loop():
             print(f"[steam] --- цикл: проверяю {len(items)} предмет(ов) ---", flush=True)
         for it in items:
             try:
-                check_item(it)
+                if check_item(it) == "rate_limited":
+                    _cooldown_until = time.time() + STEAM_COOLDOWN
+                    print(f"[steam] ⚠️ Steam лимитирует (429). Пауза {STEAM_COOLDOWN}s, "
+                          f"чтобы лимит сбросился.", flush=True)
+                    break
             except Exception as e:
                 print(f"[steam] {it['name']}: ошибка: {e}", flush=True)
             time.sleep(REQUEST_DELAY)
@@ -331,7 +352,9 @@ def main():
     storage.init_db()
     print(f"[init] storage={'postgres' if storage.IS_PG else 'sqlite'} "
           f"owner={'set' if OWNER_CHAT_ID else 'OPEN'} "
-          f"currency={CURRENCY} margin={DEFAULT_MARGIN_PCT}%", flush=True)
+          f"currency={CURRENCY} margin={DEFAULT_MARGIN_PCT}% "
+          f"interval={POLL_INTERVAL}s cookie={'yes' if STEAM_COOKIE else 'no'}",
+          flush=True)
     threading.Thread(target=telegram_loop, daemon=True).start()
     threading.Thread(target=poller_loop, daemon=True).start()
     print(f"[init] serving /health on :{PORT}", flush=True)

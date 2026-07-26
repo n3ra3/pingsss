@@ -1,6 +1,5 @@
 """Steam Community Market helpers: parse market URLs and fetch sell listings."""
 import re
-import time
 from urllib.parse import quote, unquote
 
 import requests
@@ -50,13 +49,18 @@ def parse_price_to_cents(s):
         return None
 
 
-def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
-                       max_retries=3):
+def fetch_lowest_price(appid, market_hash_name, currency=1, session=None):
     """Query Steam's priceoverview endpoint.
 
-    Returns {'lowest_cents': int, 'median_cents': int|None, 'volume': int|None}
-    for the cheapest current sell listing, or None if unavailable (rate limited,
-    no listings, network error). None means "skip this cycle", not "out of range".
+    On success returns
+      {'lowest_cents': int, 'median_cents': int|None, 'volume': int|None}
+    On failure returns {'error': reason}, where reason is:
+      '429'      -> rate limited (caller should back off hard)
+      'no_data'  -> success=false (bad name / no listings)
+      'no_price' -> no lowest_price in the payload
+      'http<N>'  -> unexpected status code
+      'network' / 'badjson' -> transport / parse problem
+    Does NOT retry: retrying during a rate limit only keeps the ban alive.
     """
     sess = session or requests
     url = "https://steamcommunity.com/market/priceoverview/"
@@ -65,30 +69,31 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
         "currency": currency,
         "market_hash_name": market_hash_name,
     }
-    for attempt in range(max_retries):
+    try:
+        r = sess.get(url, params=params, headers=HEADERS, timeout=30)
+    except requests.RequestException:
+        return {"error": "network"}
+    if r.status_code == 429:
+        return {"error": "429"}
+    if r.status_code != 200:
+        return {"error": f"http{r.status_code}"}
+    try:
+        data = r.json()
+    except ValueError:
+        return {"error": "badjson"}
+    if not data or not data.get("success"):
+        return {"error": "no_data"}
+    lowest = parse_price_to_cents(data.get("lowest_price"))
+    if lowest is None:
+        return {"error": "no_price"}
+    vol = None
+    if data.get("volume"):
         try:
-            r = sess.get(url, params=params, headers=HEADERS, timeout=30)
-            if r.status_code == 429:
-                time.sleep(8 * (attempt + 1))
-                continue
-            r.raise_for_status()
-            data = r.json()
-            if not data or not data.get("success"):
-                return None
-            lowest = parse_price_to_cents(data.get("lowest_price"))
-            if lowest is None:
-                return None
+            vol = int(re.sub(r"[^0-9]", "", data["volume"]))
+        except ValueError:
             vol = None
-            if data.get("volume"):
-                try:
-                    vol = int(re.sub(r"[^0-9]", "", data["volume"]))
-                except ValueError:
-                    vol = None
-            return {
-                "lowest_cents": lowest,
-                "median_cents": parse_price_to_cents(data.get("median_price")),
-                "volume": vol,
-            }
-        except (requests.RequestException, ValueError):
-            time.sleep(3)
-    return None
+    return {
+        "lowest_cents": lowest,
+        "median_cents": parse_price_to_cents(data.get("median_price")),
+        "volume": vol,
+    }
