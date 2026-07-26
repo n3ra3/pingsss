@@ -1,0 +1,5 @@
+requests>=2.31
+Flask>=3.0
+waitress>=3.0
+psycopg[binary]>=3.1
+python-dotenv>=1.0

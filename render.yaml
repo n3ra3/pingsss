@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: steam-order-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # set in dashboard
+      - key: OWNER_CHAT_ID
+        sync: false          # set in dashboard
+      - key: DATABASE_URL
+        sync: false          # Neon/Supabase Postgres connection string
+      - key: CURRENCY
+        value: "1"           # 1 = USD
+      - key: DEFAULT_MARGIN_PCT
+        value: "10"
+      - key: POLL_INTERVAL
+        value: "90"
+      - key: REQUEST_DELAY
+        value: "4"
