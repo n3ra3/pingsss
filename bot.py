@@ -187,7 +187,7 @@ def handle_check(chat_id):
             if data.get("median_cents"):
                 extra.append(f"медиана ${data['median_cents']/100:.2f}")
             if data.get("volume"):
-                extra.append(f"объём {data['volume']}")
+                extra.append(f"лотов {data['volume']}")
             extra_s = ("\n   " + " · ".join(extra)) if extra else ""
             lines.append(
                 f"• {name}\n"
@@ -275,6 +275,7 @@ REASON_RU = {
     "429": "рейт-лимит Steam (429)",
     "no_data": "предмет не найден (проверь ссылку/имя)",
     "no_price": "нет активных лотов на продажу сейчас",
+    "currency": "цена пришла не в USD (регион IP)",
     "network": "ошибка сети",
     "badjson": "некорректный ответ Steam",
 }
@@ -302,7 +303,7 @@ def check_item(it):
     if low <= ceiling_cents:
         if last != low:  # new lot / new price -> ping once
             over = (low / order_cents - 1) * 100 if order_cents else 0
-            vol = f"\nОбъём за сутки: {data['volume']}" if data.get("volume") else ""
+            vol = f"\nАктивных лотов: {data['volume']}" if data.get("volume") else ""
             send_message(it["chat_id"],
                          f"🔔 <b>{html.escape(it['name'])}</b>\n"
                          f"Самый дешёвый лот: <b>${low/100:.2f}</b> "
@@ -321,7 +322,7 @@ def check_item(it):
 
     med = data.get("median_cents")
     med_s = f" median=${med/100:.2f}" if med else ""
-    vol_s = f" vol={data['volume']}" if data.get("volume") else ""
+    vol_s = f" listings={data['volume']}" if data.get("volume") else ""
     print(f"[steam] {it['name']}: lowest=${low/100:.2f}{med_s}{vol_s} "
           f"order=${order_cents/100:.2f} ceiling=${ceiling_cents/100:.2f} "
           f"-> {decision}", flush=True)

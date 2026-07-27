@@ -50,24 +50,33 @@ def parse_price_to_cents(s):
 
 
 def fetch_lowest_price(appid, market_hash_name, currency=1, session=None):
-    """Query Steam's priceoverview endpoint.
+    """Query Steam's market search endpoint for the cheapest active listing.
+
+    Uses market/search/render (a different, more lenient rate-limit bucket than
+    priceoverview) and picks the result whose hash_name matches exactly.
 
     On success returns
-      {'lowest_cents': int, 'median_cents': int|None, 'volume': int|None}
-    On failure returns {'error': reason}, where reason is:
+      {'lowest_cents': int, 'median_cents': None, 'volume': int}
+      where 'volume' is the number of active sell listings.
+    On failure returns {'error': reason}:
       '429'      -> rate limited (caller should back off hard)
-      'no_data'  -> success=false (bad name / no listings)
-      'no_price' -> no lowest_price in the payload
+      'no_data'  -> item not found in results
+      'no_price' -> no active sell listing right now
+      'currency' -> price came back in a non-USD currency (region mismatch)
       'http<N>'  -> unexpected status code
       'network' / 'badjson' -> transport / parse problem
     Does NOT retry: retrying during a rate limit only keeps the ban alive.
     """
     sess = session or requests
-    url = "https://steamcommunity.com/market/priceoverview/"
+    url = "https://steamcommunity.com/market/search/render/"
     params = {
+        "query": market_hash_name,
         "appid": appid,
-        "currency": currency,
-        "market_hash_name": market_hash_name,
+        "search_descriptions": 0,
+        "norender": 1,
+        "count": 10,
+        "start": 0,
+        "currency": currency,  # note: this endpoint ignores it; region decides
     }
     try:
         r = sess.get(url, params=params, headers=HEADERS, timeout=30)
@@ -83,17 +92,29 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None):
         return {"error": "badjson"}
     if not data or not data.get("success"):
         return {"error": "no_data"}
-    lowest = parse_price_to_cents(data.get("lowest_price"))
-    if lowest is None:
+
+    target = None
+    for res in data.get("results") or []:
+        names = (res.get("hash_name"),
+                 (res.get("asset_description") or {}).get("market_hash_name"))
+        if market_hash_name in names:
+            target = res
+            break
+    if target is None:
+        return {"error": "no_data"}
+
+    sell_price = target.get("sell_price")
+    listings = target.get("sell_listings") or 0
+    if not sell_price or not listings:
         return {"error": "no_price"}
-    vol = None
-    if data.get("volume"):
-        try:
-            vol = int(re.sub(r"[^0-9]", "", data["volume"]))
-        except ValueError:
-            vol = None
+
+    # guard against a non-USD region: only trust plain "$" prices
+    price_text = target.get("sell_price_text") or ""
+    if "$" not in price_text or any(c in price_text for c in ("€", "£", "₽", "¥")):
+        return {"error": "currency"}
+
     return {
-        "lowest_cents": lowest,
-        "median_cents": parse_price_to_cents(data.get("median_price")),
-        "volume": vol,
+        "lowest_cents": int(sell_price),  # already in cents
+        "median_cents": None,
+        "volume": int(listings),
     }
