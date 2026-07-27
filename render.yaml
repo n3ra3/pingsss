@@ -20,7 +20,7 @@ services:
       - key: DEFAULT_MARGIN_PCT
         value: "10"
       - key: POLL_INTERVAL
-        value: "120"
+        value: "600"
       - key: REQUEST_DELAY
         value: "8"
       - key: STEAM_COOLDOWN

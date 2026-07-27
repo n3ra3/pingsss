@@ -175,9 +175,7 @@ def handle_check(chat_id):
         name = html.escape(it["name"])
         if data.get("error"):
             reason = data["error"]
-            note = ("⚠️ Steam лимитирует запросы (429) — подожди пару минут"
-                    if reason == "429" else f"⚠️ нет данных ({reason})")
-            lines.append(f"• {name}\n   {note}")
+            lines.append(f"• {name}\n   ⚠️ {reason_text(reason)}")
             print(f"[check] {it['name']}: {reason}", flush=True)
         else:
             low = data["lowest_cents"]
@@ -271,6 +269,19 @@ def telegram_loop():
 
 
 # ---------------------------------------------------------------- steam poller
+REASON_RU = {
+    "429": "рейт-лимит Steam (429)",
+    "no_data": "предмет не найден (проверь ссылку/имя)",
+    "no_price": "нет активных лотов на продажу сейчас",
+    "network": "ошибка сети",
+    "badjson": "некорректный ответ Steam",
+}
+
+
+def reason_text(r):
+    return REASON_RU.get(r, r)
+
+
 def check_item(it):
     order_cents = it["order_price_cents"]
     ceiling_cents = round(order_cents * (1 + (it["margin_pct"] or 0) / 100))
@@ -279,7 +290,7 @@ def check_item(it):
         currency=CURRENCY, session=_session)
     if data.get("error"):
         reason = data["error"]
-        print(f"[steam] {it['name']}: {reason} — пропуск", flush=True)
+        print(f"[steam] {it['name']}: {reason_text(reason)} — пропуск", flush=True)
         return "rate_limited" if reason == "429" else None
 
     low = data["lowest_cents"]
