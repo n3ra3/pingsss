@@ -33,6 +33,7 @@ OWNER_CHAT_ID = os.environ.get("OWNER_CHAT_ID", "").strip()
 CURRENCY = int(os.environ.get("CURRENCY", "1"))          # 1 = USD
 COUNTRY = os.environ.get("COUNTRY", "US")
 DEFAULT_PROFIT_PCT = float(os.environ.get("DEFAULT_PROFIT_PCT", "20"))
+PS_FEE_PCT = float(os.environ.get("PS_FEE_PCT", "10"))   # haircut on PirateSwap price
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))    # seconds per full cycle
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "8"))    # seconds between items
 STEAM_COOLDOWN = int(os.environ.get("STEAM_COOLDOWN", "600"))  # pause after a 429, seconds
@@ -87,12 +88,13 @@ def _authorized(chat_id):
 HELP = (
     "<b>Steam → PirateSwap арбитраж</b>\n\n"
     "Кидай <b>только ссылку</b> на предмет Steam Market (можно несколько за раз). "
-    "Бот сам берёт нижнюю цену Steam (закуп) и цену на PirateSwap (продажа) и "
-    f"пингует, когда профит ≥ <b>{DEFAULT_PROFIT_PCT:g}%</b>.\n\n"
+    "Бот сам берёт нижнюю цену Steam (закуп) и цену на PirateSwap за вычетом "
+    f"{PS_FEE_PCT:g}% (продажа) и пингует, когда профит ≥ <b>{DEFAULT_PROFIT_PCT:g}%</b>.\n\n"
     "Можно задать свой порог: добавь число после ссылки —\n"
     "<code>https://steamcommunity.com/market/listings/730/... 25</code> "
     "(порог 25%).\n\n"
-    "Профит = (цена PirateSwap − нижняя цена Steam) / нижняя цена Steam.\n\n"
+    f"Профит = (цена PirateSwap × {1 - PS_FEE_PCT/100:g} − нижняя цена Steam) / "
+    "нижняя цена Steam.\n\n"
     "Команды:\n"
     "/list — список отслеживаемого\n"
     "/check — проверить прямо сейчас\n"
@@ -175,11 +177,12 @@ def handle_check(chat_id):
             lines.append(
                 f"• {name}\n"
                 f"   Steam ${ev['steam_cents']/100:.2f} → "
-                f"PS ${ev['ps_cents']/100:.2f}\n"
+                f"PS ${ev['ps_cents']/100:.2f} −{PS_FEE_PCT:g}% = "
+                f"${ev['ps_net_cents']/100:.2f}\n"
                 f"   профит <b>+{ev['profit']:.1f}%</b> "
                 f"(порог {ev['threshold']:g}%) {mark}")
             print(f"[check] {it['name']}: steam=${ev['steam_cents']/100:.2f} "
-                  f"ps=${ev['ps_cents']/100:.2f} profit=+{ev['profit']:.1f}%",
+                  f"ps_net=${ev['ps_net_cents']/100:.2f} profit=+{ev['profit']:.1f}%",
                   flush=True)
         time.sleep(REQUEST_DELAY)
     send_message(chat_id, "\n\n".join(lines))
@@ -301,8 +304,10 @@ def evaluate_item(it):
         return {"error": pd["error"], "side": "ps", "steam_cents": steam_cents}
 
     ps_cents = pd["price_cents"]
+    ps_net_cents = round(ps_cents * (1 - PS_FEE_PCT / 100))  # what you actually get
     return {"steam_cents": steam_cents, "ps_cents": ps_cents,
-            "profit": _profit_pct(steam_cents, ps_cents),
+            "ps_net_cents": ps_net_cents,
+            "profit": _profit_pct(steam_cents, ps_net_cents),
             "threshold": threshold, "steam_data": sd}
 
 
@@ -320,7 +325,7 @@ def check_item(it):
         # only a Steam 429 warrants the global cooldown
         return "rate_limited" if (reason == "429" and side == "steam") else None
 
-    steam_c, ps_c = ev["steam_cents"], ev["ps_cents"]
+    steam_c, ps_c, ps_net = ev["steam_cents"], ev["ps_cents"], ev["ps_net_cents"]
     profit, thr = ev["profit"], ev["threshold"]
     last = it["last_alert_cents"]
 
@@ -330,7 +335,8 @@ def check_item(it):
                          f"🔔 <b>{html.escape(it['name'])}</b>\n"
                          f"Профит <b>+{profit:.1f}%</b> (порог {thr:g}%)\n"
                          f"Steam (закуп): <b>${steam_c/100:.2f}</b>\n"
-                         f"PirateSwap (продажа): <b>${ps_c/100:.2f}</b>\n"
+                         f"PirateSwap: ${ps_c/100:.2f} −{PS_FEE_PCT:g}% = "
+                         f"<b>${ps_net/100:.2f}</b>\n"
                          f"{it['url']}")
             storage.update_last_alert(it["id"], steam_c)
             decision = f"🔔 АЛЕРТ +{profit:.1f}%"
@@ -341,7 +347,8 @@ def check_item(it):
             storage.update_last_alert(it["id"], None)
         decision = f"+{profit:.1f}% < {thr:g}%"
 
-    print(f"[calc] {it['name']}: steam=${steam_c/100:.2f} ps=${ps_c/100:.2f} "
+    print(f"[calc] {it['name']}: steam=${steam_c/100:.2f} "
+          f"ps=${ps_c/100:.2f}(-{PS_FEE_PCT:g}%=${ps_net/100:.2f}) "
           f"-> {decision}", flush=True)
 
 

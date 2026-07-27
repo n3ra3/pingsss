@@ -1,9 +1,9 @@
 # Steam → PirateSwap arbitrage watcher (Telegram bot)
 
 Кидаешь боту **ссылку на предмет Steam Market** — он берёт **нижнюю цену Steam**
-(во сколько обойдётся купить) и **цену на PirateSwap** (за сколько продать) и
-пингует в Telegram, когда профит `(PS − Steam) / Steam` достигает порога
-(по умолчанию **20%**).
+(во сколько обойдётся купить) и **цену на PirateSwap за вычетом `PS_FEE_PCT`**
+(по умолчанию −10%, за сколько реально продать) и пингует в Telegram, когда
+профит `(PS×0.9 − Steam) / Steam` достигает порога (по умолчанию **20%**).
 
 Источники данных (только чтение, ничего не пишется):
 - **Steam** — `market/search/render` (нижняя цена активного лота). Валюту эндпоинт
@@ -46,6 +46,7 @@ https://steamcommunity.com/market/listings/730/AK-47%20%7C%20Redline%20(Field-Te
 | `DATABASE_URL` | на Render — да | `postgres://...` (Neon/Supabase). Пусто = локальный SQLite |
 | `CURRENCY` | нет | `1` = USD (по умолчанию) |
 | `DEFAULT_PROFIT_PCT` | нет | порог профита Steam→PirateSwap в %, по умолчанию `20` |
+| `PS_FEE_PCT` | нет | вычет из цены PirateSwap перед расчётом профита, по умолчанию `10` |
 | `POLL_INTERVAL` | нет | секунд между полными циклами, по умолчанию `90` |
 | `REQUEST_DELAY` | нет | секунд между запросами по предметам, по умолчанию `4` |
 | `PORT` | нет | порт `/health` (Render задаёт сам) |
