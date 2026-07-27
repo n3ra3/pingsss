@@ -46,8 +46,8 @@ def init_db():
                 market_hash_name TEXT,
                 name TEXT,
                 url TEXT,
-                order_price_cents INTEGER,
-                margin_pct {real},
+                profit_threshold {real},
+                ps_code TEXT,
                 last_alert_cents INTEGER,
                 created_at {ts}
             )""")
@@ -56,23 +56,27 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT
             )""")
-        # migration for DBs created before last_alert_cents existed
-        try:
-            cur.execute("ALTER TABLE items ADD COLUMN last_alert_cents INTEGER")
-            _commit()
-        except Exception:
-            pass
+        # migrations for DBs created before these columns existed
+        for col, decl in (("last_alert_cents", "INTEGER"),
+                          ("profit_threshold", real),
+                          ("ps_code", "TEXT")):
+            try:
+                cur.execute(f"ALTER TABLE items ADD COLUMN {col} {decl}")
+                _commit()
+            except Exception:
+                pass
         _commit()
 
 
-def add_item(chat_id, appid, market_hash_name, name, url, order_price_cents, margin_pct):
+def add_item(chat_id, appid, market_hash_name, name, url, profit_threshold,
+             ps_code=None):
     with _lock:
         cur = _conn.cursor()
         sql = (f"INSERT INTO items (chat_id, appid, market_hash_name, name, url, "
-               f"order_price_cents, margin_pct) VALUES "
+               f"profit_threshold, ps_code) VALUES "
                f"({PH},{PH},{PH},{PH},{PH},{PH},{PH})")
         params = (chat_id, appid, market_hash_name, name, url,
-                  order_price_cents, margin_pct)
+                  profit_threshold, ps_code)
         if IS_PG:
             cur.execute(sql + " RETURNING id", params)
             new_id = cur.fetchone()[0]
@@ -87,13 +91,20 @@ def _row_to_item(row):
     return {
         "id": row[0], "chat_id": row[1], "appid": row[2],
         "market_hash_name": row[3], "name": row[4], "url": row[5],
-        "order_price_cents": row[6], "margin_pct": row[7],
+        "profit_threshold": row[6], "ps_code": row[7],
         "last_alert_cents": row[8],
     }
 
 
 _COLS = ("id, chat_id, appid, market_hash_name, name, url, "
-         "order_price_cents, margin_pct, last_alert_cents")
+         "profit_threshold, ps_code, last_alert_cents")
+
+
+def update_ps_code(item_id, code):
+    with _lock:
+        cur = _conn.cursor()
+        cur.execute(f"UPDATE items SET ps_code={PH} WHERE id={PH}", (code, item_id))
+        _commit()
 
 
 def list_items(chat_id):

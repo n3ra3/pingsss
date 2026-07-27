@@ -26,12 +26,13 @@ from waitress import serve
 
 import steam
 import storage
+import pirateswap
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 OWNER_CHAT_ID = os.environ.get("OWNER_CHAT_ID", "").strip()
 CURRENCY = int(os.environ.get("CURRENCY", "1"))          # 1 = USD
 COUNTRY = os.environ.get("COUNTRY", "US")
-DEFAULT_MARGIN_PCT = float(os.environ.get("DEFAULT_MARGIN_PCT", "10"))
+DEFAULT_PROFIT_PCT = float(os.environ.get("DEFAULT_PROFIT_PCT", "20"))
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))    # seconds per full cycle
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "8"))    # seconds between items
 STEAM_COOLDOWN = int(os.environ.get("STEAM_COOLDOWN", "600"))  # pause after a 429, seconds
@@ -40,7 +41,8 @@ STEAM_COOKIE = os.environ.get("STEAM_COOKIE", "").strip()      # optional steamL
 PORT = int(os.environ.get("PORT", "10000"))
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-_session = requests.Session()
+_session = requests.Session()          # Steam (may carry steamLoginSecure cookie)
+_ps_session = requests.Session()       # PirateSwap (kept separate — no Steam cookie)
 if STEAM_COOKIE:
     # accept either "steamLoginSecure=VALUE" or just "VALUE"
     _cookie = STEAM_COOKIE if "=" in STEAM_COOKIE else f"steamLoginSecure={STEAM_COOKIE}"
@@ -83,19 +85,17 @@ def _authorized(chat_id):
 
 
 HELP = (
-    "<b>Steam buy-order watcher</b>\n\n"
-    "Кидай сообщение вида:\n"
-    "<code>&lt;ссылка на предмет&gt; &lt;твоя цена ордера&gt; [+N%] [макс. цена]</code>\n\n"
-    "Примеры:\n"
-    "<code>https://steamcommunity.com/market/listings/730/... 12.50</code>\n"
-    "<code>https://steamcommunity.com/market/listings/730/... 12.50 8%</code>\n"
-    "<code>https://steamcommunity.com/market/listings/730/... 12.50 14.00</code>\n\n"
-    "Первое число — цена твоего ордера. <code>N%</code> — потолок выгоды над "
-    "ордером. Второе число (без %) — абсолютный максимум.\n"
-    f"По умолчанию потолок +{DEFAULT_MARGIN_PCT:g}%.\n\n"
+    "<b>Steam → PirateSwap арбитраж</b>\n\n"
+    "Кидай <b>только ссылку</b> на предмет Steam Market (можно несколько за раз). "
+    "Бот сам берёт нижнюю цену Steam (закуп) и цену на PirateSwap (продажа) и "
+    f"пингует, когда профит ≥ <b>{DEFAULT_PROFIT_PCT:g}%</b>.\n\n"
+    "Можно задать свой порог: добавь число после ссылки —\n"
+    "<code>https://steamcommunity.com/market/listings/730/... 25</code> "
+    "(порог 25%).\n\n"
+    "Профит = (цена PirateSwap − нижняя цена Steam) / нижняя цена Steam.\n\n"
     "Команды:\n"
     "/list — список отслеживаемого\n"
-    "/check — проверить цены прямо сейчас\n"
+    "/check — проверить прямо сейчас\n"
     "/remove N — убрать предмет №N из /list\n"
     "/help — эта справка"
 )
@@ -107,6 +107,10 @@ def _num(s):
     return float(s.replace(",", "."))
 
 
+def _profit_pct(steam_cents, ps_cents):
+    return (ps_cents - steam_cents) / steam_cents * 100 if steam_cents else 0
+
+
 def handle_add(chat_id, text):
     parsed = steam.parse_market_url(text)
     if not parsed:
@@ -115,93 +119,68 @@ def handle_add(chat_id, text):
     appid, name, url = parsed
 
     rest = re.sub(r"\S*steamcommunity\.com/market/listings/\S+", "", text)
-    pct_m = re.search(rf"({_NUM})\s*%", rest)
-    margin_pct = _num(pct_m.group(1)) if pct_m else None
-    if pct_m:
-        rest = rest[:pct_m.start()] + rest[pct_m.end():]
-
     nums = re.findall(_NUM, rest)
-    if not nums:
-        send_message(chat_id, "Укажи цену своего ордера после ссылки. /help")
-        return
-    order_price = _num(nums[0])
-    order_cents = round(order_price * 100)
+    threshold = _num(nums[0]) if nums else DEFAULT_PROFIT_PCT
 
-    max_price = _num(nums[1]) if len(nums) > 1 else None
-    if margin_pct is None and max_price is not None and order_price > 0:
-        margin_pct = (max_price / order_price - 1) * 100
-    if margin_pct is None:
-        margin_pct = DEFAULT_MARGIN_PCT
+    # resolve the PirateSwap code up front so we can confirm coverage
+    code, ps_err = pirateswap.resolve_code(name, session=_ps_session)
+    item_id = storage.add_item(chat_id, appid, name, name, url, threshold, code)
 
-    item_id = storage.add_item(chat_id, appid, name, name, url, order_cents, margin_pct)
-    ceiling = order_price * (1 + margin_pct / 100)
-    send_message(
-        chat_id,
-        f"✅ Отслеживаю <b>#{item_id}</b>: {html.escape(name)}\n"
-        f"Твой ордер: <b>${order_price:.2f}</b>\n"
-        f"Потолок: <b>${ceiling:.2f}</b> (+{margin_pct:.1f}%)\n"
-        f"Пингну, когда появится лот на продажу в этом диапазоне.",
-    )
+    lines = [f"✅ Отслеживаю <b>#{item_id}</b>: {html.escape(name)}",
+             f"Порог профита: <b>{threshold:g}%</b>"]
+    if code:
+        lines.append("PirateSwap: ✔ найден")
+    elif ps_err == "not_on_ps":
+        lines.append("PirateSwap: ⚠️ предмета нет на площадке — профит не посчитать")
+    else:
+        lines.append(f"PirateSwap: пока не подтверждён ({reason_text(ps_err or 'no_stock')}), "
+                     "попробую в цикле")
+    lines.append("Пингну, когда профит достигнет порога.")
+    send_message(chat_id, "\n".join(lines))
 
 
 def handle_list(chat_id):
     items = storage.list_items(chat_id)
     if not items:
-        send_message(chat_id, "Список пуст. Кинь ссылку + цену, чтобы добавить.")
+        send_message(chat_id, "Список пуст. Кинь ссылку на предмет Steam Market, чтобы добавить.")
         return
     lines = ["<b>Отслеживаемые предметы:</b>"]
     for i, it in enumerate(items, 1):
-        order = it["order_price_cents"] / 100
-        ceiling = order * (1 + (it["margin_pct"] or 0) / 100)
-        lines.append(
-            f"{i}. {html.escape(it['name'])}\n"
-            f"    ордер ${order:.2f} · потолок ${ceiling:.2f} "
-            f"(+{it['margin_pct']:.1f}%)"
-        )
+        thr = (it["profit_threshold"] if it["profit_threshold"] is not None
+               else DEFAULT_PROFIT_PCT)
+        ps = "✔ PS" if it["ps_code"] else "— PS?"
+        lines.append(f"{i}. {html.escape(it['name'])}\n"
+                     f"    порог {thr:g}% · {ps}")
     lines.append("\nУбрать: /remove N")
     send_message(chat_id, "\n".join(lines))
 
 
 def handle_check(chat_id):
-    """On-demand: fetch current prices for all tracked items and report."""
+    """On-demand: compute Steam→PirateSwap profit for all tracked items."""
     items = storage.list_items(chat_id)
     if not items:
-        send_message(chat_id, "Список пуст. Добавь предмет: ссылка + цена.")
+        send_message(chat_id, "Список пуст. Кинь ссылку на предмет Steam Market.")
         return
     send_message(chat_id, f"Проверяю {len(items)} предмет(ов) сейчас...")
     lines = []
     for it in items:
-        order = it["order_price_cents"]
-        ceil = round(order * (1 + (it["margin_pct"] or 0) / 100))
-        data = steam.fetch_lowest_price(
-            it["appid"], it["market_hash_name"], currency=CURRENCY,
-            session=_session, max_pages=MAX_PAGES)
+        ev = evaluate_item(it)
         name = html.escape(it["name"])
-        if data.get("error"):
-            reason = data["error"]
-            lines.append(f"• {name}\n   ⚠️ {reason_text(reason)}")
-            diag = ""
-            if reason == "no_data" and "scanned" in data:
-                diag = (f" [просмотрено {data['scanned']}/{data['total']}, "
-                        f"напр.: {data.get('sample')}]")
-            print(f"[check] {it['name']}: {reason}{diag}", flush=True)
+        if ev.get("error"):
+            side = ev.get("side")
+            lines.append(f"• {name}\n   ⚠️ {side}: {reason_text(ev['error'])}")
+            print(f"[check] {it['name']}: {side}:{ev['error']}", flush=True)
         else:
-            low = data["lowest_cents"]
-            in_range = low <= ceil
-            mark = "✅ в диапазоне" if in_range else "— выше потолка"
-            extra = []
-            if data.get("median_cents"):
-                extra.append(f"медиана ${data['median_cents']/100:.2f}")
-            if data.get("volume"):
-                extra.append(f"лотов {data['volume']}")
-            extra_s = ("\n   " + " · ".join(extra)) if extra else ""
+            mark = ("✅ ВЫГОДНО" if ev["profit"] >= ev["threshold"] else "—")
             lines.append(
                 f"• {name}\n"
-                f"   лоу <b>${low/100:.2f}</b> · ордер ${order/100:.2f} · "
-                f"потолок ${ceil/100:.2f}{extra_s}\n   {mark}")
-            print(f"[check] {it['name']}: lowest=${low/100:.2f} "
-                  f"order=${order/100:.2f} ceiling=${ceil/100:.2f} "
-                  f"in_range={in_range}", flush=True)
+                f"   Steam ${ev['steam_cents']/100:.2f} → "
+                f"PS ${ev['ps_cents']/100:.2f}\n"
+                f"   профит <b>+{ev['profit']:.1f}%</b> "
+                f"(порог {ev['threshold']:g}%) {mark}")
+            print(f"[check] {it['name']}: steam=${ev['steam_cents']/100:.2f} "
+                  f"ps=${ev['ps_cents']/100:.2f} profit=+{ev['profit']:.1f}%",
+                  flush=True)
         time.sleep(REQUEST_DELAY)
     send_message(chat_id, "\n\n".join(lines))
 
@@ -250,7 +229,7 @@ def handle_update(update):
     elif "steamcommunity.com/market/listings/" in low:
         handle_add(chat_id, text)
     else:
-        send_message(chat_id, "Не понял. Кинь ссылку + цену или /help.")
+        send_message(chat_id, "Не понял. Кинь ссылку на предмет Steam Market или /help.")
 
 
 def telegram_loop():
@@ -278,12 +257,14 @@ def telegram_loop():
 
 # ---------------------------------------------------------------- steam poller
 REASON_RU = {
-    "429": "рейт-лимит Steam (429)",
-    "no_data": "предмет не найден (проверь ссылку/имя)",
+    "429": "рейт-лимит (429)",
+    "no_data": "предмет не найден на Steam (проверь ссылку/имя)",
     "no_price": "нет активных лотов на продажу сейчас",
     "currency": "цена пришла не в USD (регион IP)",
+    "not_on_ps": "нет на PirateSwap",
+    "no_stock": "нет активных лотов на PirateSwap",
     "network": "ошибка сети",
-    "badjson": "некорректный ответ Steam",
+    "badjson": "некорректный ответ",
 }
 
 
@@ -291,51 +272,76 @@ def reason_text(r):
     return REASON_RU.get(r, r)
 
 
-def check_item(it):
-    order_cents = it["order_price_cents"]
-    ceiling_cents = round(order_cents * (1 + (it["margin_pct"] or 0) / 100))
-    data = steam.fetch_lowest_price(
+def evaluate_item(it):
+    """Fetch Steam (buy cost) + PirateSwap (sell price) and compute profit %.
+
+    Returns on success:
+      {'steam_cents', 'ps_cents', 'profit', 'threshold', 'steam_data'}
+    On failure:
+      {'error': reason, 'side': 'steam'|'ps', 'steam_cents'?, 'steam_data'?}
+    """
+    threshold = (it["profit_threshold"] if it["profit_threshold"] is not None
+                 else DEFAULT_PROFIT_PCT)
+    sd = steam.fetch_lowest_price(
         it["appid"], it["market_hash_name"],
         currency=CURRENCY, session=_session, max_pages=MAX_PAGES)
-    if data.get("error"):
-        reason = data["error"]
-        diag = ""
-        if reason == "no_data" and "scanned" in data:
-            diag = (f" [просмотрено {data['scanned']}/{data['total']}, "
-                    f"напр.: {data.get('sample')}]")
-        print(f"[steam] {it['name']}: {reason_text(reason)}{diag} — пропуск",
-              flush=True)
-        return "rate_limited" if reason == "429" else None
+    if sd.get("error"):
+        return {"error": sd["error"], "side": "steam", "steam_data": sd}
+    steam_cents = sd["lowest_cents"]
 
-    low = data["lowest_cents"]
+    code = it["ps_code"]
+    if not code:
+        code, perr = pirateswap.resolve_code(it["market_hash_name"],
+                                             session=_ps_session)
+        if not code:
+            return {"error": perr, "side": "ps", "steam_cents": steam_cents}
+        storage.update_ps_code(it["id"], code)
+    pd = pirateswap.fetch_price(code, session=_ps_session)
+    if pd.get("error"):
+        return {"error": pd["error"], "side": "ps", "steam_cents": steam_cents}
+
+    ps_cents = pd["price_cents"]
+    return {"steam_cents": steam_cents, "ps_cents": ps_cents,
+            "profit": _profit_pct(steam_cents, ps_cents),
+            "threshold": threshold, "steam_data": sd}
+
+
+def check_item(it):
+    ev = evaluate_item(it)
+    if ev.get("error"):
+        reason, side = ev["error"], ev.get("side")
+        diag = ""
+        sd = ev.get("steam_data") or {}
+        if reason == "no_data" and "scanned" in sd:
+            diag = (f" [просмотрено {sd['scanned']}/{sd['total']}, "
+                    f"напр.: {sd.get('sample')}]")
+        print(f"[calc] {it['name']}: {side}: {reason_text(reason)}{diag} — пропуск",
+              flush=True)
+        # only a Steam 429 warrants the global cooldown
+        return "rate_limited" if (reason == "429" and side == "steam") else None
+
+    steam_c, ps_c = ev["steam_cents"], ev["ps_cents"]
+    profit, thr = ev["profit"], ev["threshold"]
     last = it["last_alert_cents"]
 
-    # ping on ANY lot at or below the ceiling — including below your order
-    if low <= ceiling_cents:
-        if last != low:  # new lot / new price -> ping once
-            over = (low / order_cents - 1) * 100 if order_cents else 0
-            vol = f"\nАктивных лотов: {data['volume']}" if data.get("volume") else ""
+    if profit >= thr:
+        if last != steam_c:  # new opportunity (Steam price moved) -> ping once
             send_message(it["chat_id"],
                          f"🔔 <b>{html.escape(it['name'])}</b>\n"
-                         f"Самый дешёвый лот: <b>${low/100:.2f}</b> "
-                         f"({over:+.1f}% к ордеру ${order_cents/100:.2f})\n"
-                         f"Потолок: ${ceiling_cents/100:.2f}{vol}\n"
+                         f"Профит <b>+{profit:.1f}%</b> (порог {thr:g}%)\n"
+                         f"Steam (закуп): <b>${steam_c/100:.2f}</b>\n"
+                         f"PirateSwap (продажа): <b>${ps_c/100:.2f}</b>\n"
                          f"{it['url']}")
-            storage.update_last_alert(it["id"], low)
-            decision = "🔔 АЛЕРТ отправлен"
+            storage.update_last_alert(it["id"], steam_c)
+            decision = f"🔔 АЛЕРТ +{profit:.1f}%"
         else:
-            decision = "в диапазоне, уже уведомлял"
+            decision = f"+{profit:.1f}% ≥ порога, уже уведомлял"
     else:
-        # above ceiling: reset so a later drop re-alerts
         if last is not None:
             storage.update_last_alert(it["id"], None)
-        decision = "выше потолка"
+        decision = f"+{profit:.1f}% < {thr:g}%"
 
-    med = data.get("median_cents")
-    med_s = f" median=${med/100:.2f}" if med else ""
-    vol_s = f" listings={data['volume']}" if data.get("volume") else ""
-    print(f"[steam] {it['name']}: lowest=${low/100:.2f}{med_s}{vol_s} "
-          f"order=${order_cents/100:.2f} ceiling=${ceiling_cents/100:.2f} "
+    print(f"[calc] {it['name']}: steam=${steam_c/100:.2f} ps=${ps_c/100:.2f} "
           f"-> {decision}", flush=True)
 
 
@@ -352,7 +358,7 @@ def poller_loop():
 
         items = storage.all_items()
         if not items:
-            print("[steam] watchlist пуст — отправь боту ссылку + цену, чтобы добавить",
+            print("[steam] watchlist пуст — пришли боту ссылку на предмет Steam Market",
                   flush=True)
         else:
             print(f"[steam] --- цикл: проверяю {len(items)} предмет(ов) ---", flush=True)
@@ -377,7 +383,7 @@ def main():
     storage.init_db()
     print(f"[init] storage={'postgres' if storage.IS_PG else 'sqlite'} "
           f"owner={'set' if OWNER_CHAT_ID else 'OPEN'} "
-          f"currency={CURRENCY} margin={DEFAULT_MARGIN_PCT}% "
+          f"currency={CURRENCY} profit>={DEFAULT_PROFIT_PCT}% "
           f"interval={POLL_INTERVAL}s cookie={'yes' if STEAM_COOKIE else 'no'}",
           flush=True)
     threading.Thread(target=telegram_loop, daemon=True).start()

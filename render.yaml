@@ -17,8 +17,8 @@ services:
         sync: false          # optional: steamLoginSecure=... for higher Steam limits
       - key: CURRENCY
         value: "1"           # 1 = USD
-      - key: DEFAULT_MARGIN_PCT
-        value: "10"
+      - key: DEFAULT_PROFIT_PCT
+        value: "20"
       - key: POLL_INTERVAL
         value: "600"
       - key: REQUEST_DELAY
