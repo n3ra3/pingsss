@@ -41,7 +41,9 @@ PORT = int(os.environ.get("PORT", "10000"))
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 _session = requests.Session()
 if STEAM_COOKIE:
-    _session.headers.update({"Cookie": STEAM_COOKIE})
+    # accept either "steamLoginSecure=VALUE" or just "VALUE"
+    _cookie = STEAM_COOKIE if "=" in STEAM_COOKIE else f"steamLoginSecure={STEAM_COOKIE}"
+    _session.headers.update({"Cookie": _cookie})
 
 _cooldown_until = 0  # epoch seconds; while now < this, skip all Steam requests
 
