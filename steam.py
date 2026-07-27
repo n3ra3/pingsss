@@ -51,7 +51,7 @@ def parse_price_to_cents(s):
 
 
 def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
-                       max_pages=6):
+                       max_pages=50):
     """Query Steam's market search endpoint for the cheapest active listing.
 
     Uses market/search/render (a different, more lenient rate-limit bucket than

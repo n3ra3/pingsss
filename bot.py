@@ -35,6 +35,7 @@ DEFAULT_MARGIN_PCT = float(os.environ.get("DEFAULT_MARGIN_PCT", "10"))
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))    # seconds per full cycle
 REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "8"))    # seconds between items
 STEAM_COOLDOWN = int(os.environ.get("STEAM_COOLDOWN", "600"))  # pause after a 429, seconds
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "50"))            # search pages to scan per item
 STEAM_COOKIE = os.environ.get("STEAM_COOKIE", "").strip()      # optional steamLoginSecure=...
 PORT = int(os.environ.get("PORT", "10000"))
 
@@ -173,7 +174,8 @@ def handle_check(chat_id):
         order = it["order_price_cents"]
         ceil = round(order * (1 + (it["margin_pct"] or 0) / 100))
         data = steam.fetch_lowest_price(
-            it["appid"], it["market_hash_name"], currency=CURRENCY, session=_session)
+            it["appid"], it["market_hash_name"], currency=CURRENCY,
+            session=_session, max_pages=MAX_PAGES)
         name = html.escape(it["name"])
         if data.get("error"):
             reason = data["error"]
@@ -290,7 +292,7 @@ def check_item(it):
     ceiling_cents = round(order_cents * (1 + (it["margin_pct"] or 0) / 100))
     data = steam.fetch_lowest_price(
         it["appid"], it["market_hash_name"],
-        currency=CURRENCY, session=_session)
+        currency=CURRENCY, session=_session, max_pages=MAX_PAGES)
     if data.get("error"):
         reason = data["error"]
         print(f"[steam] {it['name']}: {reason_text(reason)} — пропуск", flush=True)

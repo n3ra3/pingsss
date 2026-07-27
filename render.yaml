@@ -25,3 +25,5 @@ services:
         value: "8"
       - key: STEAM_COOLDOWN
         value: "600"
+      - key: MAX_PAGES
+        value: "50"
