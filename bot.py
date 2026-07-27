@@ -180,7 +180,11 @@ def handle_check(chat_id):
         if data.get("error"):
             reason = data["error"]
             lines.append(f"• {name}\n   ⚠️ {reason_text(reason)}")
-            print(f"[check] {it['name']}: {reason}", flush=True)
+            diag = ""
+            if reason == "no_data" and "scanned" in data:
+                diag = (f" [просмотрено {data['scanned']}/{data['total']}, "
+                        f"напр.: {data.get('sample')}]")
+            print(f"[check] {it['name']}: {reason}{diag}", flush=True)
         else:
             low = data["lowest_cents"]
             in_range = low <= ceil
@@ -295,7 +299,12 @@ def check_item(it):
         currency=CURRENCY, session=_session, max_pages=MAX_PAGES)
     if data.get("error"):
         reason = data["error"]
-        print(f"[steam] {it['name']}: {reason_text(reason)} — пропуск", flush=True)
+        diag = ""
+        if reason == "no_data" and "scanned" in data:
+            diag = (f" [просмотрено {data['scanned']}/{data['total']}, "
+                    f"напр.: {data.get('sample')}]")
+        print(f"[steam] {it['name']}: {reason_text(reason)}{diag} — пропуск",
+              flush=True)
         return "rate_limited" if reason == "429" else None
 
     low = data["lowest_cents"]

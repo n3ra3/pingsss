@@ -75,6 +75,9 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
     # page through the results and pick the one whose hash_name matches exactly.
     page = 0
     start = 0
+    scanned = 0
+    total = 0
+    sample = []
     while page < max_pages:
         params = {
             "query": market_hash_name,
@@ -98,7 +101,8 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
         except ValueError:
             return {"error": "badjson"}
         if not data or not data.get("success"):
-            return {"error": "no_data"}
+            return {"error": "no_data", "scanned": scanned, "total": total,
+                    "sample": sample}
 
         results = data.get("results") or []
         for res in results:
@@ -106,7 +110,10 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
                      (res.get("asset_description") or {}).get("market_hash_name"))
             if market_hash_name in names:
                 return _parse_result(res)
+            if len(sample) < 3:
+                sample.append(res.get("hash_name"))
 
+        scanned += len(results)
         total = data.get("total_count") or 0
         start += len(results)
         page += 1
@@ -114,7 +121,7 @@ def fetch_lowest_price(appid, market_hash_name, currency=1, session=None,
             break
         time.sleep(1.5)  # be gentle between pages
 
-    return {"error": "no_data"}
+    return {"error": "no_data", "scanned": scanned, "total": total, "sample": sample}
 
 
 def _parse_result(res):
