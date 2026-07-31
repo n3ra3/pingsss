@@ -85,6 +85,13 @@ def _authorized(chat_id):
     return str(chat_id) == OWNER_CHAT_ID
 
 
+def notify_owner(text, fallback_chat=None):
+    """Send an out-of-band notice to the owner (or the given chat as fallback)."""
+    chat = OWNER_CHAT_ID or fallback_chat
+    if chat:
+        send_message(chat, text)
+
+
 HELP = (
     "<b>Steam → PirateSwap арбитраж</b>\n\n"
     "Кидай <b>только ссылку</b> на предмет Steam Market (можно несколько за раз). "
@@ -375,6 +382,12 @@ def poller_loop():
                     _cooldown_until = time.time() + STEAM_COOLDOWN
                     print(f"[steam] ⚠️ Steam лимитирует (429). Пауза {STEAM_COOLDOWN}s, "
                           f"чтобы лимит сбросился.", flush=True)
+                    notify_owner(
+                        f"⚠️ Steam вернул <b>429</b> (рейт-лимит).\n"
+                        f"Похоже, пора обновить куку <code>STEAM_COOKIE</code> "
+                        f"(свежий <code>steamLoginSecure</code>) на Render.\n"
+                        f"Пауза {STEAM_COOLDOWN // 60} мин, потом попробую снова.",
+                        fallback_chat=it["chat_id"])
                     break
             except Exception as e:
                 print(f"[steam] {it['name']}: ошибка: {e}", flush=True)
