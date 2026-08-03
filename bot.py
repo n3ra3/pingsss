@@ -186,7 +186,8 @@ def handle_check(chat_id):
                 f"   Steam ${ev['steam_cents']/100:.2f} → "
                 f"PS ${ev['ps_cents']/100:.2f} −{PS_FEE_PCT:g}% = "
                 f"${ev['ps_net_cents']/100:.2f}\n"
-                f"   профит <b>+{ev['profit']:.1f}%</b> "
+                f"   профит <b>+{ev['profit']:.1f}%</b> · "
+                f"чистыми <b>${ev['net_profit_cents']/100:+.2f}</b> "
                 f"(порог {ev['threshold']:g}%) {mark}")
             print(f"[check] {it['name']}: steam=${ev['steam_cents']/100:.2f} "
                   f"ps_net=${ev['ps_net_cents']/100:.2f} profit=+{ev['profit']:.1f}%",
@@ -314,6 +315,7 @@ def evaluate_item(it):
     ps_net_cents = round(ps_cents * (1 - PS_FEE_PCT / 100))  # what you actually get
     return {"steam_cents": steam_cents, "ps_cents": ps_cents,
             "ps_net_cents": ps_net_cents,
+            "net_profit_cents": ps_net_cents - steam_cents,  # clean profit in $
             "profit": _profit_pct(steam_cents, ps_net_cents),
             "threshold": threshold, "steam_data": sd}
 
@@ -333,6 +335,7 @@ def check_item(it):
         return "rate_limited" if (reason == "429" and side == "steam") else None
 
     steam_c, ps_c, ps_net = ev["steam_cents"], ev["ps_cents"], ev["ps_net_cents"]
+    net = ev["net_profit_cents"]
     profit, thr = ev["profit"], ev["threshold"]
     last = it["last_alert_cents"]
 
@@ -341,6 +344,7 @@ def check_item(it):
             send_message(it["chat_id"],
                          f"🔔 <b>{html.escape(it['name'])}</b>\n"
                          f"Профит <b>+{profit:.1f}%</b> (порог {thr:g}%)\n"
+                         f"Чистыми: <b>${net/100:+.2f}</b>\n"
                          f"Steam (закуп): <b>${steam_c/100:.2f}</b>\n"
                          f"PirateSwap: ${ps_c/100:.2f} −{PS_FEE_PCT:g}% = "
                          f"<b>${ps_net/100:.2f}</b>\n"
